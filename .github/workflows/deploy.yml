@@ -25,10 +25,10 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v1
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -48,70 +48,32 @@ jobs:
           echo "QUEUE_URL=${QUEUE_URL}" >> $GITHUB_ENV
           echo "QUEUE_ARN=${QUEUE_ARN}" >> $GITHUB_ENV
 
-      - name: Allow SNS to SQS
+      - name: Update SQS Policy JSON
         run: |
-          POLICY=$(cat <<EOF
-          {
-            "Version": "2012-10-17",
-            "Statement": [{
-              "Effect": "Allow",
-              "Principal": "*",
-              "Action": "sqs:SendMessage",
-              "Resource": "${{ env.QUEUE_ARN }}",
-              "Condition": {
-                "ArnEquals": {
-                  "aws:SourceArn": "${{ env.SNS_ARN }}"
-                }
-              }
-            }]
-          }
-          EOF
-          )
-          aws sqs set-queue-attributes \
-            --queue-url ${{ env.QUEUE_URL }} \
-            --attributes Policy="${POLICY}"
+          jq ".Statement[0].Resource = \"$QUEUE_ARN\" | .Statement[0].Condition.ArnEquals.\"aws:SourceArn\" = \"$SNS_ARN\"" json/sqs_policy.json > temp_sqs_policy.json
+          aws sqs set-queue-attributes --queue-url $QUEUE_URL --attributes Policy="file://temp_sqs_policy.json"
 
       - name: Subscribe SQS to SNS
         run: |
           aws sns subscribe \
-            --topic-arn ${{ env.SNS_ARN }} \
+            --topic-arn $SNS_ARN \
             --protocol sqs \
-            --notification-endpoint ${{ env.QUEUE_ARN }}
+            --notification-endpoint $QUEUE_ARN
 
-      - name: Create Lambda Role
+      - name: Update Lambda Trust Policy JSON
         run: |
-          ROLE_EXISTS=$(aws iam list-roles --query "Roles[?RoleName=='${{ env.LAMBDA_ROLE_NAME }}'].RoleName" --output text)
-          if [ -z "$ROLE_EXISTS" ]; then
-            aws iam create-role \
-              --role-name ${{ env.LAMBDA_ROLE_NAME }} \
-              --assume-role-policy-document '{
-                "Version": "2012-10-17",
-                "Statement": [{
-                  "Effect": "Allow",
-                  "Principal": {"Service": "lambda.amazonaws.com"},
-                  "Action": "sts:AssumeRole"
-                }]
-              }'
-            aws iam attach-role-policy \
-              --role-name ${{ env.LAMBDA_ROLE_NAME }} \
-              --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaSQSQueueExecutionRole
-            aws iam attach-role-policy \
-              --role-name ${{ env.LAMBDA_ROLE_NAME }} \
-              --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-            aws iam put-role-policy \
-              --role-name ${{ env.LAMBDA_ROLE_NAME }} \
-              --policy-name sns-publish \
-              --policy-document '{
-                "Version": "2012-10-17",
-                "Statement": [{
-                  "Effect": "Allow",
-                  "Action": "sns:Publish",
-                  "Resource": "'${{ env.SNS_ARN }}'"
-                }]
-              }'
-          fi
-          ROLE_ARN=$(aws iam get-role --role-name ${{ env.LAMBDA_ROLE_NAME }} --query 'Role.Arn' --output text)
-          echo "ROLE_ARN=${ROLE_ARN}" >> $GITHUB_ENV
+          jq ".Statement[0].Principal.Service = \"lambda.amazonaws.com\"" json/lambda_trust_policy.json > temp_lambda_trust_policy.json
+          aws iam create-role --role-name ${{ env.LAMBDA_ROLE_NAME }} --assume-role-policy-document file://temp_lambda_trust_policy.json
+
+      - name: Attach Lambda Policies
+        run: |
+          aws iam attach-role-policy --role-name ${{ env.LAMBDA_ROLE_NAME }} --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaSQSQueueExecutionRole
+          aws iam attach-role-policy --role-name ${{ env.LAMBDA_ROLE_NAME }} --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+      - name: Update SNS Publish Policy JSON
+        run: |
+          jq ".Statement[0].Resource = \"$SNS_ARN\"" json/sns_policy.json > temp_sns_policy.json
+          aws iam put-role-policy --role-name ${{ env.LAMBDA_ROLE_NAME }} --policy-name sns-publish --policy-document file://temp_sns_policy.json
 
       - name: Package Lambda
         run: |
@@ -119,13 +81,15 @@ jobs:
 
       - name: Deploy Lambda
         run: |
+          ROLE_ARN=$(aws iam get-role --role-name ${{ env.LAMBDA_ROLE_NAME }} --query 'Role.Arn' --output text)
+          echo "ROLE_ARN=${ROLE_ARN}" >> $GITHUB_ENV
           aws lambda create-function \
             --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
             --runtime python3.9 \
-            --role ${{ env.ROLE_ARN }} \
+            --role $ROLE_ARN \
             --handler lambda_function.lambda_handler \
             --zip-file fileb://function.zip \
-            --environment "Variables={SNS_TOPIC_ARN=${{ env.SNS_ARN }}}" || \
+            --environment "Variables={SNS_TOPIC_ARN=$SNS_ARN}" || \
           aws lambda update-function-code \
             --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
             --zip-file fileb://function.zip
@@ -134,5 +98,5 @@ jobs:
         run: |
           aws lambda create-event-source-mapping \
             --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
-            --event-source-arn ${{ env.QUEUE_ARN }} \
+            --event-source-arn $QUEUE_ARN \
             --batch-size 1
