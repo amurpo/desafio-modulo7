@@ -50,19 +50,21 @@ jobs:
 
       - name: Update SQS Policy
         run: |
-          # First substitute the variables in the JSON file
-          POLICY=$(cat json/sqs_policy.json | \
-            sed "s|\${QUEUE_ARN}|$QUEUE_ARN|g" | \
-            sed "s|\${SNS_ARN}|$SNS_ARN|g")
+                # Read and process the policy file
+                POLICY=$(cat json/sqs_policy.json | \
+                  sed "s|\${QUEUE_ARN}|$QUEUE_ARN|g" | \
+                  sed "s|\${SNS_ARN}|$SNS_ARN|g")
           
-          # Validate and escape the JSON
-          POLICY_ESCAPED=$(echo "$POLICY" | jq -c .)
+                # Create the attributes JSON string properly
+                ATTRIBUTES=$(jq -n \
+                  --arg policy "$POLICY" \
+                  '{"Policy": $policy}')
           
-          # Set the queue attributes
-          aws sqs set-queue-attributes \
-            --queue-url "$QUEUE_URL" \
-            --attributes "{\"Policy\":$POLICY_ESCAPED}"
-
+                # Apply the policy
+                aws sqs set-queue-attributes \
+                  --queue-url "$QUEUE_URL" \
+                  --attributes "$ATTRIBUTES"
+                  
       - name: Subscribe SQS to SNS
         run: |
           aws sns subscribe \
