@@ -1,15 +1,16 @@
 {
-    "Version": "2012-10-17",
-    "Statement": [{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
       "Effect": "Allow",
       "Principal": "*",
       "Action": "sqs:SendMessage",
-      "Resource": "",
+      "Resource": "${QUEUE_ARN}",
       "Condition": {
         "ArnEquals": {
-          "aws:SourceArn": ""
+          "aws:SourceArn": "${SNS_ARN}"
         }
       }
-    }]
-  }
-  
+    }
+  ]
+}
