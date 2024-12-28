@@ -1,18 +1,18 @@
 name: Despliegue SNS-SQS-Lambda
 
 on:
-    push:
-      branches:
-        - main
-      paths-ignore:
-        - 'LICENSE'
-        - 'README.md'
-    pull_request:
-      branches:
-        - main
-      paths-ignore:
-        - 'LICENSE'
-        - 'README.md'
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'LICENSE'
+      - 'README.md'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - 'LICENSE'
+      - 'README.md'
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION }}
@@ -39,7 +39,6 @@ jobs:
         run: |
           SNS_ARN=$(aws sns create-topic --name ${{ env.SNS_TOPIC_NAME }} --query 'TopicArn' --output text)
           echo "SNS_ARN=${SNS_ARN}" >> $GITHUB_ENV
-          echo "sns_arn=${SNS_ARN}" >> $GITHUB_OUTPUT
 
       - name: Create SQS Queue
         id: create-sqs
@@ -48,27 +47,29 @@ jobs:
           QUEUE_ARN=$(aws sqs get-queue-attributes --queue-url $QUEUE_URL --attribute-names QueueArn --query 'Attributes.QueueArn' --output text)
           echo "QUEUE_URL=${QUEUE_URL}" >> $GITHUB_ENV
           echo "QUEUE_ARN=${QUEUE_ARN}" >> $GITHUB_ENV
-          echo "queue_url=${QUEUE_URL}" >> $GITHUB_OUTPUT
-          echo "queue_arn=${QUEUE_ARN}" >> $GITHUB_OUTPUT
 
       - name: Allow SNS to SQS
         run: |
+          POLICY=$(cat <<EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Principal": "*",
+              "Action": "sqs:SendMessage",
+              "Resource": "${{ env.QUEUE_ARN }}",
+              "Condition": {
+                "ArnEquals": {
+                  "aws:SourceArn": "${{ env.SNS_ARN }}"
+                }
+              }
+            }]
+          }
+          EOF
+          )
           aws sqs set-queue-attributes \
             --queue-url ${{ env.QUEUE_URL }} \
-            --attributes "{\"Policy\":\"{
-              \\\"Version\\\": \\\"2012-10-17\\\",
-              \\\"Statement\\\": [{
-                \\\"Effect\\\": \\\"Allow\\\",
-                \\\"Principal\\\": \\\"*\\\",
-                \\\"Action\\\": \\\"sqs:SendMessage\\\",
-                \\\"Resource\\\": \\\"${{ env.QUEUE_ARN }}\\\",
-                \\\"Condition\\\": {
-                  \\\"ArnEquals\\\": {
-                    \\\"aws:SourceArn\\\": \\\"${{ env.SNS_ARN }}\\\"
-                  }
-                }
-              }]
-            }\"}"
+            --attributes Policy="${POLICY}"
 
       - name: Subscribe SQS to SNS
         run: |
@@ -79,33 +80,36 @@ jobs:
 
       - name: Create Lambda Role
         run: |
-          aws iam create-role \
-            --role-name ${{ env.LAMBDA_ROLE_NAME }} \
-            --assume-role-policy-document '{
-              "Version": "2012-10-17",
-              "Statement": [{
-                "Effect": "Allow",
-                "Principal": {"Service": "lambda.amazonaws.com"},
-                "Action": "sts:AssumeRole"
-              }]
-            }'
-          aws iam attach-role-policy \
-            --role-name ${{ env.LAMBDA_ROLE_NAME }} \
-            --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaSQSQueueExecutionRole
-          aws iam attach-role-policy \
-            --role-name ${{ env.LAMBDA_ROLE_NAME }} \
-            --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-          aws iam put-role-policy \
-            --role-name ${{ env.LAMBDA_ROLE_NAME }} \
-            --policy-name sns-publish \
-            --policy-document '{
-              "Version": "2012-10-17",
-              "Statement": [{
-                "Effect": "Allow",
-                "Action": "sns:Publish",
-                "Resource": "'${{ env.SNS_ARN }}'"
-              }]
-            }'
+          ROLE_EXISTS=$(aws iam list-roles --query "Roles[?RoleName=='${{ env.LAMBDA_ROLE_NAME }}'].RoleName" --output text)
+          if [ -z "$ROLE_EXISTS" ]; then
+            aws iam create-role \
+              --role-name ${{ env.LAMBDA_ROLE_NAME }} \
+              --assume-role-policy-document '{
+                "Version": "2012-10-17",
+                "Statement": [{
+                  "Effect": "Allow",
+                  "Principal": {"Service": "lambda.amazonaws.com"},
+                  "Action": "sts:AssumeRole"
+                }]
+              }'
+            aws iam attach-role-policy \
+              --role-name ${{ env.LAMBDA_ROLE_NAME }} \
+              --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaSQSQueueExecutionRole
+            aws iam attach-role-policy \
+              --role-name ${{ env.LAMBDA_ROLE_NAME }} \
+              --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+            aws iam put-role-policy \
+              --role-name ${{ env.LAMBDA_ROLE_NAME }} \
+              --policy-name sns-publish \
+              --policy-document '{
+                "Version": "2012-10-17",
+                "Statement": [{
+                  "Effect": "Allow",
+                  "Action": "sns:Publish",
+                  "Resource": "'${{ env.SNS_ARN }}'"
+                }]
+              }'
+          fi
           ROLE_ARN=$(aws iam get-role --role-name ${{ env.LAMBDA_ROLE_NAME }} --query 'Role.Arn' --output text)
           echo "ROLE_ARN=${ROLE_ARN}" >> $GITHUB_ENV
 
