@@ -1,0 +1,134 @@
+name: Despliegue SNS-SQS-Lambda
+
+on:
+    push:
+      branches:
+        - main
+      paths-ignore:
+        - 'LICENSE'
+        - 'README.md'
+    pull_request:
+      branches:
+        - main
+      paths-ignore:
+        - 'LICENSE'
+        - 'README.md'
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  SNS_TOPIC_NAME: ${{ secrets.SNS_TOPIC_NAME }}
+  SQS_QUEUE_NAME: ${{ secrets.SQS_QUEUE_NAME }}
+  LAMBDA_FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
+  LAMBDA_ROLE_NAME: ${{ secrets.LAMBDA_ROLE_NAME }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Create SNS Topic
+        id: create-sns
+        run: |
+          SNS_ARN=$(aws sns create-topic --name ${{ env.SNS_TOPIC_NAME }} --query 'TopicArn' --output text)
+          echo "SNS_ARN=${SNS_ARN}" >> $GITHUB_ENV
+          echo "sns_arn=${SNS_ARN}" >> $GITHUB_OUTPUT
+
+      - name: Create SQS Queue
+        id: create-sqs
+        run: |
+          QUEUE_URL=$(aws sqs create-queue --queue-name ${{ env.SQS_QUEUE_NAME }} --query 'QueueUrl' --output text)
+          QUEUE_ARN=$(aws sqs get-queue-attributes --queue-url $QUEUE_URL --attribute-names QueueArn --query 'Attributes.QueueArn' --output text)
+          echo "QUEUE_URL=${QUEUE_URL}" >> $GITHUB_ENV
+          echo "QUEUE_ARN=${QUEUE_ARN}" >> $GITHUB_ENV
+          echo "queue_url=${QUEUE_URL}" >> $GITHUB_OUTPUT
+          echo "queue_arn=${QUEUE_ARN}" >> $GITHUB_OUTPUT
+
+      - name: Allow SNS to SQS
+        run: |
+          aws sqs set-queue-attributes \
+            --queue-url ${{ env.QUEUE_URL }} \
+            --attributes "{\"Policy\":\"{
+              \\\"Version\\\": \\\"2012-10-17\\\",
+              \\\"Statement\\\": [{
+                \\\"Effect\\\": \\\"Allow\\\",
+                \\\"Principal\\\": \\\"*\\\",
+                \\\"Action\\\": \\\"sqs:SendMessage\\\",
+                \\\"Resource\\\": \\\"${{ env.QUEUE_ARN }}\\\",
+                \\\"Condition\\\": {
+                  \\\"ArnEquals\\\": {
+                    \\\"aws:SourceArn\\\": \\\"${{ env.SNS_ARN }}\\\"
+                  }
+                }
+              }]
+            }\"}"
+
+      - name: Subscribe SQS to SNS
+        run: |
+          aws sns subscribe \
+            --topic-arn ${{ env.SNS_ARN }} \
+            --protocol sqs \
+            --notification-endpoint ${{ env.QUEUE_ARN }}
+
+      - name: Create Lambda Role
+        run: |
+          aws iam create-role \
+            --role-name ${{ env.LAMBDA_ROLE_NAME }} \
+            --assume-role-policy-document '{
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"Service": "lambda.amazonaws.com"},
+                "Action": "sts:AssumeRole"
+              }]
+            }'
+          aws iam attach-role-policy \
+            --role-name ${{ env.LAMBDA_ROLE_NAME }} \
+            --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaSQSQueueExecutionRole
+          aws iam attach-role-policy \
+            --role-name ${{ env.LAMBDA_ROLE_NAME }} \
+            --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+          aws iam put-role-policy \
+            --role-name ${{ env.LAMBDA_ROLE_NAME }} \
+            --policy-name sns-publish \
+            --policy-document '{
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Action": "sns:Publish",
+                "Resource": "'${{ env.SNS_ARN }}'"
+              }]
+            }'
+          ROLE_ARN=$(aws iam get-role --role-name ${{ env.LAMBDA_ROLE_NAME }} --query 'Role.Arn' --output text)
+          echo "ROLE_ARN=${ROLE_ARN}" >> $GITHUB_ENV
+
+      - name: Package Lambda
+        run: |
+          zip function.zip lambda_function.py
+
+      - name: Deploy Lambda
+        run: |
+          aws lambda create-function \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+            --runtime python3.9 \
+            --role ${{ env.ROLE_ARN }} \
+            --handler lambda_function.lambda_handler \
+            --zip-file fileb://function.zip \
+            --environment "Variables={SNS_TOPIC_ARN=${{ env.SNS_ARN }}}" || \
+          aws lambda update-function-code \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+            --zip-file fileb://function.zip
+
+      - name: Create Lambda SQS trigger
+        run: |
+          aws lambda create-event-source-mapping \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+            --event-source-arn ${{ env.QUEUE_ARN }} \
+            --batch-size 1
