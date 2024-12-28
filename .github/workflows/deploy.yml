@@ -53,11 +53,10 @@ jobs:
           POLICY=$(cat json/sqs_policy.json | \
             sed "s|\${QUEUE_ARN}|$QUEUE_ARN|g" | \
             sed "s|\${SNS_ARN}|$SNS_ARN|g")
-          POLICY_ESCAPED=$(echo "$POLICY" | jq -R .)  # Escape the JSON string using jq
+          POLICY_ESCAPED=$(echo "$POLICY" | jq -c .)  # Compact and escape the JSON
           aws sqs set-queue-attributes \
             --queue-url $QUEUE_URL \
-            --attributes "Policy=$POLICY_ESCAPED"
-        
+            --attributes "{\"Policy\":\"$POLICY_ESCAPED\"}"   
 
       - name: Subscribe SQS to SNS
         run: |
