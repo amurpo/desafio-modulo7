@@ -55,7 +55,7 @@ jobs:
             sed "s|\${SNS_ARN}|$SNS_ARN|g")
           aws sqs set-queue-attributes \
             --queue-url $QUEUE_URL \
-            --attributes "{\"Policy\":$POLICY}"
+            --attributes "Policy=${POLICY}"
 
       - name: Subscribe SQS to SNS
         run: |
