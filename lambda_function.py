@@ -2,7 +2,7 @@ import boto3
 import os
 import json
 
-# Cliente para interactuar con SNS
+# Cliente para interactuar con SNS (test)
 sns_client = boto3.client('sns')
 
 def lambda_handler(event, context):
