@@ -49,7 +49,11 @@ LAMBDA_ROLE_NAME: lambda-sns-sqs-role
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml
-├── lambda_function.py
+├── json/
+│   ├── lambda_trust_policy.json
+│   ├── sns_policy.json
+│   └── sqs_policy.json
+└── lambda_function.py
 └── README.md
 ```
 ## GitHub Actions
