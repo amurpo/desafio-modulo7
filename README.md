@@ -1,5 +1,6 @@
 # Desafio-modulo7
 
+[![Despliegue SNS-SQS-Lambda](https://github.com/amurpo/desafio-modulo7/actions/workflows/deploy.yml/badge.svg)](https://github.com/amurpo/desafio-modulo7/actions/workflows/deploy.yml)
 ## Descripción del Sistema
 
 Este sistema implementa una arquitectura de procesamiento de mensajes en AWS utilizando los siguientes servicios:
